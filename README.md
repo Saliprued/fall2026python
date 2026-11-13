@@ -9,10 +9,41 @@ Built with FastAPI, SQLAlchemy and PostgreSQL.
 - **main.py**: endpoints for products, stock and orders.
 - **schemas.py**: fields accepted in request JSON.
 - **database.py**: connection, get_db(), rollback on SQL errors and session cleanup.
+- **auth.py**: endpoints for products, stock and orders.
+- **requirement.txt**: python dependencies.
+- **.env.example**: local configuration template without secrets.
+- **.gitignore*: excludes private configuration and generated files.
+
+SQLAlchemy is used for connections, sessions, and parameterized SQL. This service does not define ORM models or create database tables.
+
+## Prepare PostgreSQL
+
+Start PostgreSQL and install the database team's schema, including migrations V001, V002, and V003. 
+
+Follow the database team's [setup instructions](https://github.com/rjosephhccs/fall2026database/blob/main/docs/SETUP.md).
+
+In DBeaver, connect using the Python service login and confirm this works:
+
+```sql
+SELECT user_id, username, role, is_active
+FROM public.users;
+```
+
+The local example database is `inventory_management_dev`. You can use your own database name and password in `.env`.
+
+## Start Java authentication
+
+Configure the Java service to use the same database and start it using the Java team's instructions. For the local setup described here, Java runs at `http://localhost:8081`.
+
+The Python integration expects these Java endpoints:
+
+| Method | Path | Request | Successful response |
+| --- | --- | --- | --- |
+| POST | `/auth/authenticate` | JSON: `username`, `password` | JWT as plain text |
+| POST | `/auth/validate` | Form field: `token` | Validated username as plain text |
 
 
 ## Setup on Windows
-Install the database team's PostgreSQL schema first.
 
 Open a terminal inside the API folder and run:
 
@@ -22,23 +53,16 @@ py -m venv .venv
 Copy-Item .env.example .env
 ```
 
-Edit `.env` with your database connection settings and set:
+Edit `.env` with your PostgreSQL connection settings and local password:
 
 ```dotenv
-LOCAL_DEMO=true
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=inventory_management_dev
+DB_USER=inventory_python_login
+DB_PASSWORD=REPLACE_WITH_YOUR_LOCAL_PASSWORD
+JAVA_AUTH_URL=http://localhost:8081
 ```
-
-Use a database login with the `inventory_app` role.
-
-For local order testing, `main.py` uses:
-
-```python
-temp_user_id = 1
-```
-
-This ID must belong to an existing active `PRODUCT_MANAGER`. Change it if your test employee has a different ID.
-
-Do not upload `.env` or `.venv` to GitHub.
 
 ## Run the API
 
@@ -50,97 +74,92 @@ Open http://127.0.0.1:8000/docs.
 
 Select an endpoint, click **Try it out**, enter the values and click **Execute**.
 
+## Log in using Postman
+
+Create a POST request to `http://localhost:8081/auth/authenticate`.
+
+Choose **Body → raw → JSON**, then enter your own credentials:
+
+```json
+{
+  "username": "YOUR_USERNAME",
+  "password": "YOUR_PASSWORD"
+}
+```
+A successful login returns `200 OK` and a JWT. Copy the token without quotes or extra spaces. Do not share or commit the token.
+
+For a Python API request, open **Authorization → Bearer Token** in Postman and paste the token. First try:
+
+```text
+GET http://localhost:8000/api/me
+```
+
 ## Test the endpoints
 
-Replace the example IDs with the IDs returned by your API.
+Use a local development database: these tests write real records and completed orders cannot be deleted through normal operations.
 
-### Create a product
+1. **Create a product:** POST `/api/products` with:
 
-POST `/api/products`
+   ```json
+   {
+     "name": "USB Mouse",
+     "sku": "TEST-MOUSE-001",
+     "description": "Local API test",
+     "price": 10.50,
+     "reorder_level": 5
+   }
+   ```
 
-```json
-{
-  "name": "Wireless Mouse",
-  "sku": "MOUSE-001",
-  "description": "USB mouse",
-  "price": "12.50",
-  "reorder_level": 5
-}
-```
+   Expect 201. Save the returned `product_id`. Initial stock is zero.
 
-Returns the new product ID. Stock starts at zero.
+2. **Read products:** GET `/api/products` and GET `/api/products/{product_id}` using the returned ID. Expect 200 and the saved details.
 
-### Add stock
+3. **Update details:** PUT `/api/products/{product_id}` with:
 
-POST `/api/stock-transactions`
+   ```json
+   {
+     "name": "USB Mouse - Updated",
+     "description": "Updated through FastAPI",
+     "price": 10.50,
+     "reorder_level": 5
+   }
+   ```
 
-```json
-{
-  "product_id": 1,
-  "transaction_type": "IN",
-  "quantity": 10,
-  "notes": "Initial stock"
-}
-```
+   Expect 200. This changes product details, not stock or SKU.
 
-- `IN`: adds units.
-- `OUT`: removes units.
-- `ADJUSTMENT`: sets the stock to the specified quantity.
+4. **Add stock:** POST `/api/stock-transactions` with the actual product ID:
 
-### View products
+   ```json
+   {
+     "product_id": 1,
+     "transaction_type": "IN",
+     "quantity": 10,
+     "notes": "Initial stock for local test"
+   }
+   ```
 
-GET `/api/products`
+   Replace `1` with your returned product ID. Expect 201; GET the product again to confirm stock is 10. `OUT` removes units; `ADJUSTMENT` sets the absolute stock count.
 
-Lists up to 100 products.
+5. **Create an order:** switch to the PRODUCT_MANAGER token, verify `/api/me`, and POST `/api/orders` with:
 
-GET `/api/products/1`
+   ```json
+   {
+     "items": [
+       {"product_id": 1, "quantity": 3}
+     ]
+   }
+   ```
 
-Shows one product and its current stock.
-
-### Update a product
-
-PUT `/api/products/1`
-
-```json
-{
-  "name": "Wireless Mouse",
-  "description": "Updated description",
-  "price": "15.00",
-  "reorder_level": 5
-}
-```
-
-Updates product details. It does not change stock or SKU.
-
-### Record a sale
-
-POST `/api/orders`
-
-```json
-{
-  "items": [
-    {
-      "product_id": 1,
-      "quantity": 3
-    }
-  ]
-}
-```
-
-### View an order
-
-GET `/api/orders/1`
-
-Shows the order, its status, total and items.
+   Replace `1` with the actual product ID. Expect 201 and a returned order ID.
 
 ## Error responses
-
+- `401`: invalid/expired token or inactive employee.
+- `403`: unauthorized user attempting to create an order.
 - `404`: product or order not found.
 - `409`: database rejected the operation, such as insufficient stock.
-- `422`: invalid request fields.
-- `503`: database connection unavailable or local demo disabled.
+- `422`: empty order items, duplicate product IDs, negative quantity, or invalid request fields.
+- `503`: database connection unavailable or Java unreachable.
 
 ## Current status
 
-This version is for local testing. Java authentication and employee permission checks are not connected yet.
-Orders use a temporary employee ID and do not process payments or support refunds.
+This version is for local testing. Python sends the token to Java for validation, then looks up the employee's current ID, role, and active status using V003's four permitted fields. The full live workflow must still be checked on the team's machines.
